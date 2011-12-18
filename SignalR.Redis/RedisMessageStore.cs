@@ -16,76 +16,118 @@ namespace SignalR.Redis
         private static object _connectionLock = new object();
         private static RedisConnection _redisConnection;
 
-        private int _database;
-        private JavaScriptSerializer _serializer; 
+        private static string Host { get; set; }
+        private static int Port { get; set; }
+        private static string Password { get; set; }
 
-        public RedisMessageStore(int database, string host = "localhost", int port = 6379, string password = null) 
-            : this (new RedisConnection(host, port, password: password), database) { }
-
-        private RedisMessageStore(RedisConnection redisConnection, int database)
+        private static RedisConnection Connection
         {
-            if (_redisConnection == null)
+            get
+            {
+                return _redisConnection;
+            }
+        }
+
+        private int _database;
+        private JavaScriptSerializer _serializer;
+
+        public RedisMessageStore(int database, string host = "localhost", int port = 6379, string password = null)
+        {
+            _database = database;
+            Host = host;
+            Port = port;
+            Password = password;
+            _serializer = new JavaScriptSerializer();
+        }
+
+        private bool ConnectionReady()
+        {
+            if (_redisConnection == null || _redisConnection.State != RedisConnectionBase.ConnectionState.Open)
             {
                 lock (_connectionLock)
                 {
-                    if (_redisConnection == null)
+                    if (_redisConnection == null || _redisConnection.State != RedisConnectionBase.ConnectionState.Open)
                     {
-                        _redisConnection = redisConnection;
-                        _redisConnection.Open();
+                        _redisConnection = new RedisConnection(Host, Port, password: Password, maxUnsent: 1);
+
+                        try
+                        {
+                            _redisConnection.Open().Wait();
+                            return true;                
+                        } 
+                        catch (Exception ex)
+                        {
+                            return false;
+                        }
                     }
                 }
             }
-            
-            _database = database;
-            _serializer = new JavaScriptSerializer();
+
+            return true;
         }
 
         public Task<long?> GetLastId()
         {
-            return _redisConnection.Strings.GetString(_database, MessageIdKey)
-                .ContinueWith(t =>
-                                  {
-                                      long id;
-                                      Int64.TryParse(t.Result, out id);
-                                      return (long?)id;
-                                  });
+            if (ConnectionReady())
+            {
+                return Connection.Strings.GetString(_database, MessageIdKey)
+                    .Then(t =>
+                              {
+                                  long id;
+                                  Int64.TryParse(t.Result, out id);
+                                  return (long?) id;
+                              }).Catch();
+            }
+
+            throw new InvalidOperationException("Could not get latest messageId.  Redis connection failure.");
         }
 
         public Task Save(string key, object value)
         {
-            return _redisConnection.Strings.Increment(_database, MessageIdKey)
-                .ContinueWith(t =>
-                                  {
-                                      var message = new ProtoMessage
-                                                        {
-                                                            Created = DateTime.Now,
-                                                            SignalKey = key,
-                                                            Id = t.Result,
-                                                            Value = _serializer.Serialize(value)
-                                                        };
-                                      _redisConnection.SortedSets.Add(_database,
-                                                                      key,
-                                                                      message.Serialize(),
-                                                                      message.Id);
-                                  });
+            if (ConnectionReady())
+            {
+                return Connection.Strings.Increment(_database, MessageIdKey)
+                    .Then(t =>
+                              {
+                                  var message = new ProtoMessage
+                                                    {
+                                                        Created = DateTime.Now,
+                                                        SignalKey = key,
+                                                        Id = t.Result,
+                                                        Value = _serializer.Serialize(value)
+                                                    };
+                                  _redisConnection.SortedSets.Add(_database,
+                                                                  key,
+                                                                  message.Serialize(),
+                                                                  message.Id);
+                              }).Catch();
+            }
+
+            throw new InvalidOperationException("Could not save message.  Redis connection failure.");
         }
 
         public Task<IEnumerable<Message>> GetAllSince(string key, long id)
         {
-            return _redisConnection.SortedSets.Range(_database,
-                                                     key,
-                                                     (double) id,
-                                                     (double) long.MaxValue,
-                                                     minInclusive: false)
-                .ContinueWith(t =>
-                              t.Result
-                                  .Select(o => ProtoMessage.Deserialize(o.Key))
-                                  .Select(o => new Message(o.SignalKey,
-                                                           o.Id,
-                                                           o.SignalKey.EndsWith("__SIGNALRCOMMAND__")
-                                                               ? o.Value
-                                                               : _serializer.DeserializeObject(o.Value),
-                                                           o.Created)));
+            if (ConnectionReady())
+            {
+                return Connection
+                    .SortedSets.Range(_database,
+                                      key,
+                                      (double) id,
+                                      (double) long.MaxValue,
+                                      minInclusive: false)
+                    .Then(t =>
+                          t.Result
+                              .Select(o => ProtoMessage.Deserialize(o.Key))
+                              .Select(o => new Message(o.SignalKey,
+                                                       o.Id,
+                                                       o.SignalKey.EndsWith("__SIGNALRCOMMAND__")
+                                                           ? o.Value
+                                                           : _serializer.DeserializeObject(o.Value),
+                                                       o.Created))).Catch();
+            }
+
+            throw new InvalidOperationException("Could not get messages.  Redis connection failure.");
         }
     }
 

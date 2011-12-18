@@ -14,31 +14,64 @@ namespace SignalR.Redis
         private static RedisSubscriberConnection _subscriberConnection;
         private static ConcurrentDictionary<string, SafeSet<EventHandler<SignaledEventArgs>>> _handlers;
 
-        public RedisSignalBus(string host = "localhost", int port = 6379, string password = null) : this(new RedisConnection(host, port, password: password))
+        private static string Host { get; set; }
+        private static int Port { get; set; }
+        private static string Password { get; set; }
+
+        public RedisSignalBus(string host = "localhost", int port = 6379, string password = null)
         {
+            Host = host;
+            Port = port;
+            Password = password;
+            _handlers = new ConcurrentDictionary<string, SafeSet<EventHandler<SignaledEventArgs>>>();
+            ConnectionReady();
         }
 
-        private RedisSignalBus(RedisConnection redisConnection)
+        public bool ConnectionReady()
         {
-            if (_redisConnection == null)
+            if (_redisConnection == null || _redisConnection.State != RedisConnectionBase.ConnectionState.Open)
             {
                 lock (_connectionLock)
                 {
-                    if (_redisConnection == null)
+                    if (_redisConnection == null || _redisConnection.State != RedisConnectionBase.ConnectionState.Open)
                     {
-                        _handlers = new ConcurrentDictionary<string, SafeSet<EventHandler<SignaledEventArgs>>>();
-                        _redisConnection = redisConnection;
-                        _redisConnection.Open();
-                        _subscriberConnection = _redisConnection.GetOpenSubscriberChannel();
-                        _subscriberConnection.MessageReceived += OnRedisMessageReceived;
+                        _redisConnection = new RedisConnection(Host, Port, password: Password);
+                        try
+                        {
+                            _redisConnection.Open();
+                            _subscriberConnection = _redisConnection.GetOpenSubscriberChannel();
+                            _subscriberConnection.MessageReceived += OnRedisMessageReceived;
+                            _subscriberConnection.Error += OnRedisError;
+                            return true;
+                        } 
+                        catch (Exception ex)
+                        {
+                            return false;
+                        }
                     }
                 }
             }
+            return true;
         }
 
         private void OnRedisMessageReceived(string eventKey, byte[] messageBytes)
         {
             OnSignaled(eventKey);
+        }
+
+        private void OnRedisError(object sender, ErrorEventArgs args)
+        {
+            var success = false;
+
+            while (!success)
+            {
+                if (ConnectionReady())
+                {
+                    //recover subscriptions...
+                    _handlers.Keys.ToList().ForEach(o => _subscriberConnection.Subscribe(o));
+                    success = true;
+                }
+            }
         }
 
         private void OnSignaled(string eventKey)
@@ -58,8 +91,15 @@ namespace SignalR.Redis
                 Task.Factory.StartNew(() =>
                 {
                     OnSignaled(eventKey);
-                    _redisConnection.Publish(eventKey, "", true).Wait();
-                });
+                    if (ConnectionReady())
+                    {
+                        _redisConnection.Publish(eventKey, "", true).Wait();    
+                    } 
+                    else
+                    {
+                        throw new InvalidOperationException("Could not signal: Redis connection failure.");
+                    }
+                }).Catch();
         }
 
         public void AddHandler(string eventKey, EventHandler<SignaledEventArgs> handler)
@@ -74,7 +114,10 @@ namespace SignalR.Redis
             eventHandlersForKey.Add(handler);
             if (newRedisSubscriptionRequired)
             {
-                _subscriberConnection.Subscribe(eventKey);
+                if (ConnectionReady())
+                {
+                    _subscriberConnection.Subscribe(eventKey);    
+                }
             }
         }
 
@@ -90,7 +133,10 @@ namespace SignalR.Redis
                 if (eventHandlersForKey.GetSnapshot().Count() == 0)
                 {
                     _handlers.TryRemove(eventKey, out eventHandlersForKey);
-                    _subscriberConnection.Unsubscribe(eventKey);
+                    if (ConnectionReady())
+                    {
+                        _subscriberConnection.Unsubscribe(eventKey);    
+                    }
                 }
             }
         }
