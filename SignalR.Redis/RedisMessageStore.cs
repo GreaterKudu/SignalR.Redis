@@ -96,11 +96,11 @@ namespace SignalR.Redis
                                                         Id = t.Result,
                                                         Value = _serializer.Serialize(value)
                                                     };
-                                  _redisConnection.SortedSets.Add(_database,
-                                                                  key,
-                                                                  message.Serialize(),
-                                                                  message.Id);
-                              }).Catch();
+                                  return _redisConnection.SortedSets.Add(_database,
+                                                                         key,
+                                                                         message.Serialize(),
+                                                                         message.Id);
+                              }).Unwrap();
             }
 
             throw new InvalidOperationException("Could not save message.  Redis connection failure.");
