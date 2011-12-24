@@ -31,7 +31,7 @@ namespace SignalR.Redis
         private int _database;
         private JavaScriptSerializer _serializer;
 
-        public RedisMessageStore(int database, string host = "localhost", int port = 6379, string password = null)
+        public RedisMessageStore(int database, string host, int port, string password)
         {
             _database = database;
             Host = host;

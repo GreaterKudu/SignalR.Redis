@@ -23,7 +23,7 @@ namespace SignalR.Redis
         private static int Port { get; set; }
         private static string Password { get; set; }
 
-        public RedisSignalBus(string host = "localhost", int port = 6379, string password = null)
+        public RedisSignalBus(string host, int port, string password)
         {
             Host = host;
             Port = port;
