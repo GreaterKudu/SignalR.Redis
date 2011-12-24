@@ -61,7 +61,6 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="RedisMessageStore.cs" />
     <Compile Include="RedisSignalBus.cs" />
-    <Compile Include="SafeSet.cs" />
     <Compile Include="TaskAsyncHelper.cs" />
   </ItemGroup>
   <ItemGroup>

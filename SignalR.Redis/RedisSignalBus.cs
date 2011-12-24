@@ -12,7 +12,12 @@ namespace SignalR.Redis
         private static object _connectionLock = new object();
         private static RedisConnection _redisConnection;
         private static RedisSubscriberConnection _subscriberConnection;
-        private static ConcurrentDictionary<string, SafeSet<EventHandler<SignaledEventArgs>>> _handlers;
+
+        //Handles local signaling.
+        private static InProcessSignalBus _inProcessSignalBus;
+
+        //Keep a list of subscriptions around so if there's an error we can resubscribe.
+        private static ConcurrentDictionary<string, bool> Subscriptions;
 
         private static string Host { get; set; }
         private static int Port { get; set; }
@@ -23,7 +28,8 @@ namespace SignalR.Redis
             Host = host;
             Port = port;
             Password = password;
-            _handlers = new ConcurrentDictionary<string, SafeSet<EventHandler<SignaledEventArgs>>>();
+            Subscriptions = new ConcurrentDictionary<string, bool>();
+            _inProcessSignalBus = new InProcessSignalBus();
             ConnectionReady();
         }
 
@@ -68,7 +74,7 @@ namespace SignalR.Redis
                 if (ConnectionReady())
                 {
                     //recover subscriptions...
-                    _handlers.Keys.ToList().ForEach(o => _subscriberConnection.Subscribe(o));
+                    Subscriptions.Keys.ToList().ForEach(o => _subscriberConnection.Subscribe(o));
                     success = true;
                 }
             }
@@ -76,12 +82,7 @@ namespace SignalR.Redis
 
         private void OnSignaled(string eventKey)
         {
-            //Get handlers for this event...
-            SafeSet<EventHandler<SignaledEventArgs>> handlersForEvent;
-            if (_handlers.TryGetValue(eventKey, out handlersForEvent))
-            {
-                Parallel.ForEach(handlersForEvent.GetSnapshot(), h => h(this, new SignaledEventArgs(eventKey)));
-            }
+            _inProcessSignalBus.Signal(eventKey);
         }
 
         public Task Signal(string eventKey)
@@ -104,41 +105,17 @@ namespace SignalR.Redis
 
         public void AddHandler(string eventKey, EventHandler<SignaledEventArgs> handler)
         {
-            //Get or create the bag of handlers for the event named {eventKey}
-            var eventHandlersForKey = _handlers.GetOrAdd(eventKey, new SafeSet<EventHandler<SignaledEventArgs>>());
-
-            //Determine whether we need to create a new redis subscription.
-            var newRedisSubscriptionRequired = !eventHandlersForKey.GetSnapshot().Any();
-
-            //Add the handler to the bag and create the redis subscription if necessary
-            eventHandlersForKey.Add(handler);
-            if (newRedisSubscriptionRequired)
+            _inProcessSignalBus.AddHandler(eventKey, handler);
+            if (ConnectionReady() && !Subscriptions.ContainsKey(eventKey))
             {
-                if (ConnectionReady())
-                {
-                    _subscriberConnection.Subscribe(eventKey);    
-                }
+                Subscriptions.GetOrAdd(eventKey, true);
+                _subscriberConnection.Subscribe(eventKey);
             }
         }
 
         public void RemoveHandler(string eventKey, EventHandler<SignaledEventArgs> handler)
         {
-            SafeSet<EventHandler<SignaledEventArgs>> eventHandlersForKey;
-            if (_handlers.TryGetValue(eventKey, out eventHandlersForKey))
-            {
-                //We had a subscription, remove the handler.
-                eventHandlersForKey.Remove(handler);
-
-                //If there are no more handlers for this event unsubscribe our redis connection.
-                if (!eventHandlersForKey.GetSnapshot().Any())
-                {
-                    _handlers.TryRemove(eventKey, out eventHandlersForKey);
-                    if (ConnectionReady())
-                    {
-                        _subscriberConnection.Unsubscribe(eventKey);    
-                    }
-                }
-            }
+            _inProcessSignalBus.RemoveHandler(eventKey, handler);
         }
     }
 }
