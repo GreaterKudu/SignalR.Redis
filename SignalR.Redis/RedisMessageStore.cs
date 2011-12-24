@@ -100,7 +100,7 @@ namespace SignalR.Redis
                                                                          key,
                                                                          message.Serialize(),
                                                                          message.Id);
-                              }).Unwrap();
+                              }).FastUnwrap();
             }
 
             throw new InvalidOperationException("Could not save message.  Redis connection failure.");
