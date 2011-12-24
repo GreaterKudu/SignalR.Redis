@@ -89,17 +89,17 @@ namespace SignalR.Redis
             //Run our local event handlers for the key and publish the event to anyone listening.
             return
                 Task.Factory.StartNew(() =>
-                {
-                    OnSignaled(eventKey);
-                    if (ConnectionReady())
-                    {
-                        _redisConnection.Publish(eventKey, "", true).Wait();    
-                    } 
-                    else
-                    {
-                        throw new InvalidOperationException("Could not signal: Redis connection failure.");
-                    }
-                }).Catch();
+                                          {
+                                              OnSignaled(eventKey);
+                                              if (ConnectionReady())
+                                              {
+                                                  return _redisConnection.Publish(eventKey, "", true);
+                                              }
+                                              else
+                                              {
+                                                  throw new InvalidOperationException("Could not signal: Redis connection failure.");
+                                              }
+                                          }).FastUnwrap();
         }
 
         public void AddHandler(string eventKey, EventHandler<SignaledEventArgs> handler)
@@ -108,7 +108,7 @@ namespace SignalR.Redis
             var eventHandlersForKey = _handlers.GetOrAdd(eventKey, new SafeSet<EventHandler<SignaledEventArgs>>());
 
             //Determine whether we need to create a new redis subscription.
-            var newRedisSubscriptionRequired = eventHandlersForKey.GetSnapshot().Count() == 0;
+            var newRedisSubscriptionRequired = !eventHandlersForKey.GetSnapshot().Any();
 
             //Add the handler to the bag and create the redis subscription if necessary
             eventHandlersForKey.Add(handler);
@@ -130,7 +130,7 @@ namespace SignalR.Redis
                 eventHandlersForKey.Remove(handler);
 
                 //If there are no more handlers for this event unsubscribe our redis connection.
-                if (eventHandlersForKey.GetSnapshot().Count() == 0)
+                if (!eventHandlersForKey.GetSnapshot().Any())
                 {
                     _handlers.TryRemove(eventKey, out eventHandlersForKey);
                     if (ConnectionReady())
